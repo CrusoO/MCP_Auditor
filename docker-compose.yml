@@ -1,0 +1,143 @@
+# ============================================================================
+# AgentGuard – Docker Compose stack
+# ============================================================================
+# Services
+# --------
+#   postgres         – Audit ledger database
+#   agentguard       – The Zero-Trust governance proxy (port 8000)
+#   mock-mcp-server  – Simulated tool server for integration testing (port 8001)
+#
+# Quick start
+# -----------
+#   docker compose up --build
+#
+# After startup:
+#   API docs   → http://localhost:8000/docs
+#   Mock tools → http://localhost:8001/tools
+#   Health     → http://localhost:8000/health
+# ============================================================================
+
+services:
+
+  # --------------------------------------------------------------------------
+  # PostgreSQL – Audit Ledger
+  # --------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: agentguard-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: agentguard
+      POSTGRES_PASSWORD: agentguard
+      POSTGRES_DB: agentguard
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agentguard -d agentguard"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
+      - agentguard-net
+
+  # --------------------------------------------------------------------------
+  # Mock MCP Server – Simulated tool backend
+  # --------------------------------------------------------------------------
+  mock-mcp-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.mock
+    container_name: agentguard-mock-mcp
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8001/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks:
+      - agentguard-net
+
+  # --------------------------------------------------------------------------
+  # AgentGuard Proxy – The governance gateway
+  # --------------------------------------------------------------------------
+  agentguard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: agentguard-proxy
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mock-mcp-server:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    environment:
+      # Database connection
+      DATABASE_URL: "postgresql+asyncpg://agentguard:agentguard@postgres:5432/agentguard"
+      DATABASE_SSL_REQUIRE: "false"
+
+      # Upstream tool server
+      UPSTREAM_MCP_URL: "http://mock-mcp-server:8001"
+
+      # Policy controls
+      POLICY_STRICT_MODE: "true"
+      USE_PRESIDIO: "false"
+
+      # Payload limits
+      MAX_PAYLOAD_BYTES: "1048576"
+
+      # CORS (set to your LLM client origin in production)
+      CORS_ORIGINS: "*"
+
+      # Logging
+      DB_ECHO: "false"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - agentguard-net
+
+  # --------------------------------------------------------------------------
+  # AgentGuard Dashboard – React/Next.js UI (port 3000)
+  # --------------------------------------------------------------------------
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.dashboard
+      args:
+        # Used by Next.js rewrites at runtime (server-side proxy, not baked into bundle).
+        BACKEND_URL: "http://agentguard:8000"
+    container_name: agentguard-dashboard
+    restart: unless-stopped
+    depends_on:
+      agentguard:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    environment:
+      # Runtime value read by next.config.mjs rewrites
+      BACKEND_URL: "http://agentguard:8000"
+    networks:
+      - agentguard-net
+
+# --------------------------------------------------------------------------
+# Volumes & Networks
+# --------------------------------------------------------------------------
+volumes:
+  postgres_data:
+    driver: local
+
+networks:
+  agentguard-net:
+    driver: bridge

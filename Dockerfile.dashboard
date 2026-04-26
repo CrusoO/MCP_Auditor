@@ -1,0 +1,32 @@
+# ============================================================================
+# AgentGuard Dashboard – Next.js multi-stage build
+# ============================================================================
+FROM node:20-alpine AS deps
+WORKDIR /app
+COPY dashboard/package.json ./
+RUN npm install --frozen-lockfile 2>/dev/null || npm install
+
+FROM node:20-alpine AS builder
+WORKDIR /app
+COPY --from=deps /app/node_modules ./node_modules
+COPY dashboard/ .
+# Disable anonymous telemetry ping during build (no outbound network needed).
+ENV NEXT_TELEMETRY_DISABLED=1
+# BACKEND_URL is used by next.config.mjs rewrites at runtime only.
+ARG BACKEND_URL=http://localhost:8000
+ENV BACKEND_URL=${BACKEND_URL}
+RUN npm run build
+
+FROM node:20-alpine AS runner
+WORKDIR /app
+ENV NODE_ENV=production
+RUN addgroup --system --gid 1001 nodejs && adduser --system --uid 1001 nextjs
+
+COPY --from=builder /app/public ./public
+COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
+COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+
+USER nextjs
+EXPOSE 3000
+ENV PORT=3000 HOSTNAME="0.0.0.0"
+CMD ["node", "server.js"]
