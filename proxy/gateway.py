@@ -596,6 +596,204 @@ def create_app() -> FastAPI:
                 detail="Database not reachable.",
             )
 
+    # ----------------------------------------------------------------
+    # MCP JSON-RPC 2.0 endpoint – compatible with Cursor, Claude
+    # Desktop, and any MCP-native client.
+    #
+    # Clients configure this URL in their MCP settings:
+    #   {"url": "https://agentguard-proxy.onrender.com/mcp"}
+    #
+    # Supported methods:
+    #   initialize   – capability handshake
+    #   tools/list   – enumerate available tools
+    #   tools/call   – governed tool invocation (routed through
+    #                  the same PolicyEngine pipeline as /v1/tool/invoke)
+    # ----------------------------------------------------------------
+
+    # Tool schema manifest – mirrors the mock server's tool registry.
+    _MCP_TOOLS = [
+        {
+            "name": "read_file",
+            "description": "Read a file from the project directory.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"path": {"type": "string", "description": "File path to read"}},
+                "required": ["path"],
+            },
+        },
+        {
+            "name": "list_files",
+            "description": "List files in a directory.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"directory": {"type": "string", "description": "Directory path"}},
+                "required": [],
+            },
+        },
+        {
+            "name": "search_code",
+            "description": "Search the codebase for a pattern.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"query": {"type": "string", "description": "Search pattern"}},
+                "required": ["query"],
+            },
+        },
+        {
+            "name": "query_db",
+            "description": "Execute a read-only SQL query.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"query": {"type": "string", "description": "SQL query"}},
+                "required": ["query"],
+            },
+        },
+        {
+            "name": "send_email",
+            "description": "Send an email via the configured SMTP relay.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "to":      {"type": "string"},
+                    "subject": {"type": "string"},
+                    "body":    {"type": "string"},
+                },
+                "required": ["to", "subject"],
+            },
+        },
+        {
+            "name": "git_log",
+            "description": "Show recent git commit history.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"n": {"type": "integer", "description": "Number of commits"}},
+                "required": [],
+            },
+        },
+        {
+            "name": "fetch_url",
+            "description": "Fetch the content of a URL.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"url": {"type": "string", "description": "URL to fetch"}},
+                "required": ["url"],
+            },
+        },
+    ]
+
+    def _mcp_ok(req_id: Any, result: Any) -> dict:
+        return {"jsonrpc": "2.0", "id": req_id, "result": result}
+
+    def _mcp_err(req_id: Any, code: int, message: str) -> dict:
+        return {"jsonrpc": "2.0", "id": req_id, "error": {"code": code, "message": message}}
+
+    @app.post(
+        "/mcp",
+        summary="MCP JSON-RPC 2.0 endpoint (Cursor / Claude Desktop compatible)",
+        tags=["MCP Protocol"],
+    )
+    async def mcp_jsonrpc(
+        request: Request,
+        background_tasks: BackgroundTasks,
+    ) -> JSONResponse:
+        """
+        Speaks the Model Context Protocol (JSON-RPC 2.0) so any MCP-native
+        client (Cursor, Claude Desktop, AutoGen, etc.) can connect without
+        a custom client library.
+
+        Every ``tools/call`` is routed through the same zero-trust
+        PolicyEngine pipeline as ``/v1/tool/invoke``.
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse(_mcp_err(None, -32700, "Parse error"))
+
+        req_id  = body.get("id")
+        method  = body.get("method", "")
+        params  = body.get("params") or {}
+
+        # Notifications (no id) – acknowledge silently.
+        if req_id is None and method.startswith("notifications/"):
+            return JSONResponse({})
+
+        # ── initialize ───────────────────────────────────────────────
+        if method == "initialize":
+            return JSONResponse(_mcp_ok(req_id, {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "AgentGuard", "version": "1.0.0"},
+            }))
+
+        # ── tools/list ───────────────────────────────────────────────
+        if method == "tools/list":
+            return JSONResponse(_mcp_ok(req_id, {"tools": _MCP_TOOLS}))
+
+        # ── tools/call ───────────────────────────────────────────────
+        if method == "tools/call":
+            tool_name: str = params.get("name", "")
+            tool_args: dict = params.get("arguments") or {}
+
+            # MCP clients don't send user_intent – derive a sensible default.
+            agent_id: str = (
+                request.headers.get("X-Agent-Identity")
+                or request.headers.get("x-agent-identity")
+                or "mcp-client"
+            )
+            user_intent: str = params.get(
+                "_agentguard_intent",
+                f"MCP tool call '{tool_name}' from {agent_id}",
+            )
+
+            ag_body = ToolCallRequest(
+                tool_name=tool_name,
+                tool_args=tool_args,
+                user_intent=user_intent,
+            )
+
+            try:
+                result = await proxy.intercept_call(
+                    request=request,
+                    body=ag_body,
+                    background_tasks=background_tasks,
+                    x_agent_identity=agent_id,
+                    x_session_id=request.headers.get("X-Session-Id"),
+                )
+            except HTTPException as exc:
+                return JSONResponse(_mcp_err(req_id, -32603, exc.detail))
+            except Exception as exc:
+                logger.exception("MCP tools/call error: %s", exc)
+                return JSONResponse(_mcp_err(req_id, -32603, "Internal error"))
+
+            if result.status == "blocked":
+                # Return a proper MCP error so the client knows it was blocked.
+                return JSONResponse(_mcp_err(
+                    req_id, -32001,
+                    f"AgentGuard blocked this call: {result.blocked_reason} "
+                    f"(risk_score={result.risk_score:.2f})",
+                ))
+
+            # Wrap result in MCP content format.
+            import json as _json
+            content_text = (
+                result.result
+                if isinstance(result.result, str)
+                else _json.dumps(result.result, indent=2)
+            )
+            mcp_result: dict = {
+                "content": [{"type": "text", "text": content_text}],
+                "_agentguard": {
+                    "request_id": result.request_id,
+                    "risk_score":  result.risk_score,
+                    "status":      result.status,
+                    "redacted":    result.redacted,
+                },
+            }
+            return JSONResponse(_mcp_ok(req_id, mcp_result))
+
+        # ── unknown method ───────────────────────────────────────────
+        return JSONResponse(_mcp_err(req_id, -32601, f"Method not found: {method!r}"))
+
     return app
 
 

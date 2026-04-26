@@ -231,6 +231,34 @@ class AgentGuardSession:
 
 
 # ---------------------------------------------------------------------------
+# Cursor / Claude Desktop MCP config helper
+# ---------------------------------------------------------------------------
+
+def cursor_mcp_config(proxy_url: str = "https://agentguard-proxy.onrender.com") -> str:
+    """
+    Returns the JSON snippet to paste into .cursor/mcp.json so Cursor's
+    own agent routes all tool calls through AgentGuard automatically.
+
+    Usage
+    -----
+        from agentguard_client import cursor_mcp_config
+        print(cursor_mcp_config())
+
+    Then paste the output into your project's .cursor/mcp.json file.
+    """
+    import json
+    config = {
+        "mcpServers": {
+            "agentguard": {
+                "url": f"{proxy_url.rstrip('/')}/mcp",
+                "description": "AgentGuard zero-trust MCP proxy — audits and governs all tool calls",
+            }
+        }
+    }
+    return json.dumps(config, indent=2)
+
+
+# ---------------------------------------------------------------------------
 # Quick test — run this file directly to verify your connection
 # python agentguard_client.py
 # ---------------------------------------------------------------------------
