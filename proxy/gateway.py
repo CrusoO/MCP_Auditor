@@ -559,11 +559,18 @@ def create_app() -> FastAPI:
         Evaluate a tool call against the PolicyEngine without executing it.
         Useful for pre-flight checks and debugging.
         """
-        decision = proxy._engine.evaluate(
-            tool_name=body.tool_name,
-            tool_args=body.tool_args,
-            user_intent=body.user_intent,
-        )
+        try:
+            decision = proxy._engine.evaluate(
+                tool_name=body.tool_name,
+                tool_args=body.tool_args,
+                user_intent=body.user_intent,
+            )
+        except Exception as exc:
+            logger.exception("PolicyEngine error in dry-run evaluation: %s", exc)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"PolicyEngine evaluation failed: {exc!r}",
+            )
         return PolicyDecisionSchema(**decision.to_dict())
 
     @app.get(
@@ -765,7 +772,7 @@ def create_app() -> FastAPI:
                 logger.exception("MCP tools/call error: %s", exc)
                 return JSONResponse(_mcp_err(req_id, -32603, "Internal error"))
 
-            if result.status == "blocked":
+            if result.status.upper() == "BLOCKED":
                 # Return a proper MCP error so the client knows it was blocked.
                 return JSONResponse(_mcp_err(
                     req_id, -32001,

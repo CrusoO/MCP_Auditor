@@ -55,7 +55,7 @@ export function Sidebar() {
           <span>Gateway live</span>
         </div>
         <a
-          href="http://localhost:8000/docs"
+          href="/api/docs"
           target="_blank"
           rel="noreferrer"
           className="mt-2 flex items-center gap-2 text-xs text-zinc-600 hover:text-zinc-400 transition-colors"

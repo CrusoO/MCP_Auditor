@@ -88,17 +88,26 @@ export const api = {
   riskTrend: (limit = 60) =>
     get<RiskPoint[]>(`/v1/dashboard/risk-trend?limit=${limit}`),
 
-  evaluatePolicy: (body: {
+  evaluatePolicy: async (body: {
     tool_name: string;
     tool_args: Record<string, unknown>;
     user_intent: string;
-  }) =>
-    fetch(`${BASE}/v1/policy/evaluate`, {
+  }): Promise<PolicyDecision> => {
+    const r = await fetch(`${BASE}/v1/policy/evaluate`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
-    }).then((r) => {
-      if (!r.ok) return r.json().then((e) => Promise.reject(e));
-      return r.json() as Promise<PolicyDecision>;
-    }),
+    });
+    if (!r.ok) {
+      let msg = `${r.status} ${r.statusText}`;
+      try {
+        const e = await r.json();
+        if (typeof e?.detail === "string") msg = e.detail;
+        else if (typeof e === "string") msg = e;
+        else msg = JSON.stringify(e);
+      } catch { /* use HTTP status as fallback */ }
+      throw new Error(msg);
+    }
+    return r.json() as Promise<PolicyDecision>;
+  },
 };

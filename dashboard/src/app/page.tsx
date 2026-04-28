@@ -1,6 +1,6 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { RefreshCw } from "lucide-react";
+import { RefreshCw, WifiOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { StatsCards } from "@/components/StatsCards";
 import { RiskChart } from "@/components/RiskChart";
@@ -21,6 +21,7 @@ export default function DashboardPage() {
   const [toolF,    setToolF]    = useState("");
   const [statusF,  setStatusF]  = useState("");
   const [spinning, setSpinning] = useState(false);
+  const [error,    setError]    = useState<string | null>(null);
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchAll = useCallback(async (p = page) => {
@@ -34,8 +35,10 @@ export default function DashboardPage() {
       setStats(s);
       setTrend(t);
       setAudit(a);
-    } catch { /* gateway may still be starting */ }
-    finally {
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Backend unreachable — retrying…");
+    } finally {
       setLoadingS(false);
       setLoadingA(false);
       setSpinning(false);
@@ -50,6 +53,14 @@ export default function DashboardPage() {
 
   return (
     <div className="p-6 space-y-6">
+      {/* Error banner */}
+      {error && (
+        <div className="flex items-center gap-3 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-400">
+          <WifiOff className="h-4 w-4 shrink-0" />
+          <span>{error}</span>
+        </div>
+      )}
+
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>

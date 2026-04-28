@@ -211,7 +211,9 @@ class RedactionPipeline:
                     changed = True
 
         # Optional: NLP-based pass for names / orgs / locations.
-        if self._presidio_analyzer and self._presidio_anonymizer:
+        # _presidio_anonymizer is lazily initialised inside _presidio_scrub,
+        # so we only gate on the analyzer being available.
+        if self._presidio_analyzer:
             current, presidio_findings = self._presidio_scrub(current)
             findings.extend(presidio_findings)
 

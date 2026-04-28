@@ -110,7 +110,7 @@ class AgentGuard:
         dict with keys:
             - request_id   : Unique ID for this call (for audit tracing)
             - tool_name    : Name of the tool
-            - status       : "allowed", "blocked", or "redacted"
+            - status       : "ALLOWED", "BLOCKED", or "REDACTED"
             - result       : Tool output (None if blocked)
             - blocked_reason: Why it was blocked (None if allowed)
             - risk_score   : 0.0 to 1.0 (higher = more dangerous)
@@ -139,7 +139,7 @@ class AgentGuard:
         response.raise_for_status()
         data = response.json()
 
-        if self.raise_on_block and data.get("status") == "blocked":
+        if self.raise_on_block and data.get("status", "").upper() == "BLOCKED":
             raise AgentGuardError(
                 f"Tool call '{tool_name}' was blocked by AgentGuard policy.",
                 risk_score=data.get("risk_score", 0.0),
@@ -298,21 +298,25 @@ if __name__ == "__main__":
     )
     print(f"   Status: {result['status']}  |  Risk: {result['risk_score']}\n")
 
-    # 4. Blocked call
-    print("4. Sending a BLOCKED tool call (dangerous)...")
+    # 4. Blocked call — /etc/passwd is in the static BLOCK rules
+    print("4. Sending a BLOCKED tool call (path traversal to /etc/passwd)...")
     ag_no_raise = AgentGuard(proxy_url=PROXY_URL, agent_identity="test-runner", raise_on_block=False)
     result = ag_no_raise.call(
-        tool_name="delete_file",
+        tool_name="read_file",
         tool_args={"path": "/etc/passwd"},
-        user_intent="Delete system files",
+        user_intent="Read the system password file",
     )
     print(f"   Status: {result['status']}  |  Reason: {result['blocked_reason']}\n")
 
-    # 5. Session grouping
+    # 5. Session grouping — uses only tools registered in the mock server
     print("5. Grouped session (3 calls under one session_id)...")
     with ag.new_session() as session:
-        for tool in ["list_files", "read_file", "summarize"]:
-            r = session.call(tool, {"path": "/tmp"}, "Summarize files for user")
+        for tool, args in [
+            ("list_files",  {"directory": "."}),
+            ("read_file",   {"path": "./README.md"}),
+            ("git_log",     {"n": 3}),
+        ]:
+            r = session.call(tool, args, "Summarize recent project activity")
             print(f"   {tool}: {r['status']}")
 
     print(f"\nAll done. Check your dashboard: {PROXY_URL.replace('proxy', 'dashboard')}")

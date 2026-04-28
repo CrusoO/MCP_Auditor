@@ -1,6 +1,6 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
-import { RefreshCw } from "lucide-react";
+import { RefreshCw, WifiOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { AuditTable } from "@/components/AuditTable";
 import { api, type PaginatedAudit } from "@/lib/api";
@@ -14,20 +14,30 @@ export default function AuditPage() {
   const [toolF,   setToolF]   = useState("");
   const [statusF, setStatusF] = useState("");
   const [spinning, setSpinning] = useState(false);
+  const [error,   setError]   = useState<string | null>(null);
 
   const fetchAudit = useCallback(async (p = page) => {
     setSpinning(true);
     try {
       const result = await api.audit({ page: p, limit: 25, status: statusF, agent: agentF, tool: toolF });
       setData(result);
-    } catch { /* ignore */ }
-    finally { setLoading(false); setSpinning(false); }
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Backend unreachable — retrying…");
+    } finally { setLoading(false); setSpinning(false); }
   }, [page, statusF, agentF, toolF]);
 
   useEffect(() => { fetchAudit(page); }, [fetchAudit, page]);
 
   return (
     <div className="p-6 space-y-6">
+      {error && (
+        <div className="flex items-center gap-3 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-400">
+          <WifiOff className="h-4 w-4 shrink-0" />
+          <span>{error}</span>
+        </div>
+      )}
+
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-lg font-semibold text-zinc-100">Audit Log</h1>
